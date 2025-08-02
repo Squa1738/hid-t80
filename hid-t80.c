@@ -6,10 +6,32 @@
 
 MODULE_AUTHOR("Gabriell Simic");
 MODULE_DESCRIPTION("Thrustmaster T80 Wheel Driver");
+MODULE_LICENSE("GPL");
+
+// Structure to hold per-device calibration data
+struct t80_data {
+    u16 center_value;
+    bool calibrated;
+    int sample_count;
+    u32 center_sum;
+};
 
 static int t80_input_configured(struct hid_device *hdev, struct hid_input *hidinput)
 {
     struct input_dev *input = hidinput->input;
+    struct t80_data *t80;
+
+    // Allocate per-device data for auto-calibration
+    t80 = kzalloc(sizeof(struct t80_data), GFP_KERNEL);
+    if (!t80)
+        return -ENOMEM;
+    
+    t80->center_value = 32767;  // Default center
+    t80->calibrated = false;
+    t80->sample_count = 0;
+    t80->center_sum = 0;
+    
+    hid_set_drvdata(hdev, t80);
 
     __clear_bit(EV_ABS, input->evbit);
     memset(input->evbit, 0, sizeof(input->evbit));
@@ -17,8 +39,8 @@ static int t80_input_configured(struct hid_device *hdev, struct hid_input *hidin
     memset(input->keybit, 0, sizeof(input->keybit));
 
     input_set_abs_params(input, ABS_X, 0, 65535, 0, 0);
-    input_set_abs_params(input, ABS_Y, 0, 65535, 0, 0);
-    input_set_abs_params(input, ABS_Z, 0, 65535, 0, 0);
+    input_set_abs_params(input, ABS_Y, 65535, 0, 0, 0);
+    input_set_abs_params(input, ABS_Z, 65535, 0, 0, 0);
 
     __set_bit(EV_ABS, input->evbit);
     __set_bit(EV_KEY, input->evbit);
@@ -57,7 +79,8 @@ static int t80_raw_event(struct hid_device *hdev, struct hid_report *report,
 {
     struct hid_input *hidinput;
     struct input_dev *input;
-    u16 steering, gas, brake;
+    struct t80_data *t80;
+    u16 raw_steering, gas, brake, steering;
 
     if (size < 49)
         return 0;
@@ -69,11 +92,40 @@ static int t80_raw_event(struct hid_device *hdev, struct hid_report *report,
 
     hidinput = list_first_entry(&hdev->inputs, struct hid_input, list);
     input = hidinput->input;
+    t80 = hid_get_drvdata(hdev);
 
-    // Original steering logic
-    steering = (s16)((data[44] << 8) | data[43]);
+    if (!t80)
+        return -ENODEV;
+
+    // Get raw steering value
+    raw_steering = (data[44] << 8) | data[43];
     gas = (data[46] << 8) | data[45];
     brake = (data[48] << 8) | data[47];
+
+    // Auto-calibration: collect samples when wheel seems to be at rest
+    if (!t80->calibrated && t80->sample_count < 100) {
+        static u16 last_steering = 0;
+        
+        // If steering hasn't changed much, assume it's at center
+        if (abs((s16)(raw_steering - last_steering)) < 100) {
+            t80->center_sum += raw_steering;
+            t80->sample_count++;
+            
+            if (t80->sample_count >= 50) {
+                t80->center_value = t80->center_sum / t80->sample_count;
+                t80->calibrated = true;
+                hid_info(hdev, "Auto-calibrated center position: %u\n", t80->center_value);
+            }
+        }
+        last_steering = raw_steering;
+    }
+
+    // Apply center offset to steering
+    if (raw_steering >= t80->center_value) {
+        steering = 32768 + ((raw_steering - t80->center_value) * 32767) / (65535 - t80->center_value);
+    } else {
+        steering = 32768 - ((t80->center_value - raw_steering) * 32768) / t80->center_value;
+    }
 
     input_report_abs(input, ABS_X, steering);
     input_report_abs(input, ABS_Y, gas);
@@ -111,12 +163,18 @@ static int t80_raw_event(struct hid_device *hdev, struct hid_report *report,
     return 1;
 }
 
+static void t80_remove(struct hid_device *hdev)
+{
+    struct t80_data *t80 = hid_get_drvdata(hdev);
+    kfree(t80);
+}
+
 static struct hid_driver t80_driver = {
     .name = "t80",
     .id_table = t80_devices,
     .input_configured = t80_input_configured,
     .raw_event = t80_raw_event,
+    .remove = t80_remove,
 };
 
 module_hid_driver(t80_driver);
-
