@@ -2,10 +2,12 @@
 
 > **DISCLAIMER:** This is not an official Thrustmaster driver,
 > be careful and read through the code of any kernel module you run!
-> I am not responsable for any damaged devices as a result of running
+> I am not responsible for any damaged devices as a result of running
 > this code. Use at your own discretion.
 > 
 > The module is mostly completed, the only thing that doesn't work is the PS button.
+> This code was partly vibecoded using Claude, as I do not know C, but I reverse engineered the correct inputs.
+> This driver is based on https://github.com/aregnak/hid-t80.
 
 ## Description
 
